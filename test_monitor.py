@@ -23,6 +23,16 @@ class TencentQuoteTest(unittest.TestCase):
     def test_non_ssl_quote_error_is_not_certificate_error(self) -> None:
         self.assertFalse(monitor.is_ssl_certificate_error(urllib.error.URLError("boom")))
 
+    def test_bark_payload(self) -> None:
+        payload = monitor.webhook_payload(
+            monitor.Webhook(url="https://api.day.app/example"),
+            "hello",
+            {"type": "test"},
+        )
+
+        self.assertEqual(payload["title"], "ETF折溢价率监控")
+        self.assertEqual(payload["body"], "hello")
+
 
 class NotificationLimitTest(unittest.TestCase):
     def test_can_notify_allows_only_configured_count_per_24h(self) -> None:
@@ -111,6 +121,35 @@ class NotificationLimitTest(unittest.TestCase):
 
         self.assertTrue(called["fetch"])
         self.assertEqual(sent, 1)
+
+    def test_send_test_notifications_uses_all_webhooks(self) -> None:
+        tz = ZoneInfo("Asia/Shanghai")
+        config = monitor.Config(
+            etfs=[monitor.EtfTarget(code="159659", threshold=11.0)],
+            webhooks=[
+                monitor.Webhook(url="https://example.com/a"),
+                monitor.Webhook(url="https://example.com/b"),
+            ],
+            default_threshold=0.0,
+            poll_interval_seconds=60,
+            timezone=tz,
+            state_file=Path("/tmp/premium-rate-monitor-test-state.json"),
+            max_notifications_per_24h=3,
+        )
+        sent_urls = []
+        original_send_webhook = monitor.send_webhook
+
+        try:
+            monitor.send_webhook = (
+                lambda webhook, text, event: sent_urls.append(webhook.url)
+            )
+
+            sent = monitor.send_test_notifications(config)
+        finally:
+            monitor.send_webhook = original_send_webhook
+
+        self.assertEqual(sent, 2)
+        self.assertEqual(sent_urls, ["https://example.com/a", "https://example.com/b"])
 
 
 if __name__ == "__main__":

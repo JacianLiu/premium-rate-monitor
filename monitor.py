@@ -209,6 +209,8 @@ def build_notification_text(quote: dict[str, Any], threshold: float) -> str:
 
 def webhook_payload(webhook: Webhook, text: str, event: dict[str, Any]) -> dict[str, Any]:
     kind = webhook.type.lower()
+    if kind == "bark" or "api.day.app" in webhook.url:
+        return {"title": "ETF折溢价率监控", "body": text, "event": event}
     if kind == "feishu":
         return {"msg_type": "text", "content": {"text": text}}
     if kind in {"dingtalk", "wecom"}:
@@ -220,15 +222,52 @@ def send_webhook(webhook: Webhook, text: str, event: dict[str, Any]) -> None:
     body = json.dumps(webhook_payload(webhook, text, event), ensure_ascii=False).encode(
         "utf-8"
     )
-    request = urllib.request.Request(
-        webhook.url,
+    request = build_webhook_request(webhook.url, body)
+    try:
+        open_webhook_request(request)
+    except urllib.error.URLError as exc:
+        if not is_ssl_certificate_error(exc):
+            raise
+        logging.warning(
+            "webhook HTTPS certificate check failed, retrying without certificate verification"
+        )
+        open_webhook_request(request, context=ssl._create_unverified_context())
+
+
+def build_webhook_request(url: str, body: bytes) -> urllib.request.Request:
+    return urllib.request.Request(
+        url,
         data=body,
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
+
+
+def open_webhook_request(
+    request: urllib.request.Request,
+    context: ssl.SSLContext | None = None,
+) -> None:
+    with urllib.request.urlopen(request, timeout=10, context=context) as response:
         if response.status >= 400:
             raise RuntimeError(f"webhook returned HTTP {response.status}")
+
+
+def send_test_notifications(config: Config) -> int:
+    now = datetime.now(config.timezone)
+    event = {
+        "type": "test",
+        "checked_at": now.isoformat(),
+    }
+    text = f"ETF折溢价率监控测试通知 checked_at={now.isoformat()}"
+    sent = 0
+    for webhook in config.webhooks:
+        try:
+            send_webhook(webhook, text, event)
+            sent += 1
+            logging.info("test notification sent: %s", webhook.url)
+        except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
+            logging.exception("failed to send test webhook %s: %s", webhook.url, exc)
+    return sent
 
 
 def run_once(
@@ -317,6 +356,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--once", action="store_true", help="run one check and exit")
     parser.add_argument(
+        "--test-notify",
+        action="store_true",
+        help="send a test notification to configured webhooks and exit",
+    )
+    parser.add_argument(
         "--ignore-window",
         action="store_true",
         help="ignore weekday and trading-time window checks",
@@ -336,6 +380,8 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     config = load_config(Path(args.config))
+    if args.test_notify:
+        return 0 if send_test_notifications(config) == len(config.webhooks) else 1
     if args.once:
         return 0 if run_once(config, ignore_window=args.ignore_window) >= 0 else 1
     run_forever(config)

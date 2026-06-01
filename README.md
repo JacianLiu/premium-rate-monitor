@@ -34,6 +34,12 @@ python3 monitor.py --config config.json --once
 python3 monitor.py --config config.json --once --ignore-window
 ```
 
+只测试 webhook 通知是否可达：
+
+```bash
+python3 monitor.py --config config.json --test-notify
+```
+
 长期运行：
 
 ```bash
