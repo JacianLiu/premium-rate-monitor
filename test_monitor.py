@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import urllib.error
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -18,6 +19,9 @@ class TencentQuoteTest(unittest.TestCase):
         self.assertEqual(quotes["159659"]["name"], "纳斯达克100ETF招商")
         self.assertEqual(quotes["159659"]["premium_rate"], 10.60)
         self.assertEqual(quotes["159659"]["quote_time"], "20260601142003")
+
+    def test_non_ssl_quote_error_is_not_certificate_error(self) -> None:
+        self.assertFalse(monitor.is_ssl_certificate_error(urllib.error.URLError("boom")))
 
 
 class NotificationLimitTest(unittest.TestCase):

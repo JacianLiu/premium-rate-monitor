@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -16,7 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 
-TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
+TENCENT_QUOTE_URLS = ("https://qt.gtimg.cn/q=", "http://qt.gtimg.cn/q=")
 PREMIUM_RATE_INDEX = 77
 DEFAULT_CONFIG_PATH = "config.json"
 
@@ -98,13 +99,25 @@ def market_prefix(code: str) -> str:
 
 def fetch_tencent_quotes(codes: list[str]) -> dict[str, dict[str, Any]]:
     prefixed = [market_prefix(code) for code in codes]
-    url = TENCENT_QUOTE_URL + ",".join(prefixed)
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    last_error: Exception | None = None
+    for base_url in TENCENT_QUOTE_URLS:
+        url = base_url + ",".join(prefixed)
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                data = response.read().decode("gbk")
+            return parse_tencent_quotes(data)
+        except urllib.error.URLError as exc:
+            last_error = exc
+            if not is_ssl_certificate_error(exc):
+                raise
+            logging.warning("quote HTTPS certificate check failed, retrying with HTTP")
 
-    with urllib.request.urlopen(request, timeout=10) as response:
-        data = response.read().decode("gbk")
+    raise RuntimeError("failed to fetch Tencent quotes") from last_error
 
-    return parse_tencent_quotes(data)
+
+def is_ssl_certificate_error(exc: urllib.error.URLError) -> bool:
+    return isinstance(exc.reason, ssl.SSLCertVerificationError)
 
 
 def parse_tencent_quotes(data: str) -> dict[str, dict[str, Any]]:
