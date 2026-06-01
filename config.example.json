@@ -1,0 +1,22 @@
+{
+  "etfs": [
+    {
+      "code": "159659",
+      "threshold": 10.0
+    },
+    {
+      "code": "510300"
+    }
+  ],
+  "default_threshold": 0.0,
+  "webhooks": [
+    {
+      "url": "https://example.com/webhook",
+      "type": "generic"
+    }
+  ],
+  "poll_interval_seconds": 60,
+  "timezone": "Asia/Shanghai",
+  "state_file": "premium_rate_state.json",
+  "max_notifications_per_24h": 3
+}
