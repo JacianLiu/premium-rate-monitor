@@ -218,9 +218,13 @@ def send_webhook(webhook: Webhook, text: str, event: dict[str, Any]) -> None:
             raise RuntimeError(f"webhook returned HTTP {response.status}")
 
 
-def run_once(config: Config, now: datetime | None = None) -> int:
+def run_once(
+    config: Config,
+    now: datetime | None = None,
+    ignore_window: bool = False,
+) -> int:
     now = now or datetime.now(config.timezone)
-    if not is_monitoring_time(now):
+    if not ignore_window and not is_monitoring_time(now):
         logging.info("outside monitoring window: %s", now.isoformat())
         return 0
 
@@ -300,6 +304,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--once", action="store_true", help="run one check and exit")
     parser.add_argument(
+        "--ignore-window",
+        action="store_true",
+        help="ignore weekday and trading-time window checks",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -315,7 +324,7 @@ def main() -> int:
     )
     config = load_config(Path(args.config))
     if args.once:
-        return 0 if run_once(config) >= 0 else 1
+        return 0 if run_once(config, ignore_window=args.ignore_window) >= 0 else 1
     run_forever(config)
     return 0
 

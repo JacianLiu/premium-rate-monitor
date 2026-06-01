@@ -28,6 +28,12 @@ cp config.example.json config.json
 python3 monitor.py --config config.json --once
 ```
 
+跳过交易时间窗口做手动测试：
+
+```bash
+python3 monitor.py --config config.json --once --ignore-window
+```
+
 长期运行：
 
 ```bash

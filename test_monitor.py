@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import monitor
@@ -56,6 +57,56 @@ class NotificationLimitTest(unittest.TestCase):
     def test_etf_market_prefix(self) -> None:
         self.assertEqual(monitor.market_prefix("159659"), "sz159659")
         self.assertEqual(monitor.market_prefix("510300"), "sh510300")
+
+    def test_ignore_window_fetches_outside_market_time(self) -> None:
+        tz = ZoneInfo("Asia/Shanghai")
+        config = monitor.Config(
+            etfs=[monitor.EtfTarget(code="159659", threshold=11.0)],
+            webhooks=[monitor.Webhook(url="https://example.com/webhook")],
+            default_threshold=0.0,
+            poll_interval_seconds=60,
+            timezone=tz,
+            state_file=Path("/tmp/premium-rate-monitor-test-state.json"),
+            max_notifications_per_24h=3,
+        )
+        called = {"fetch": False}
+        original_fetch = monitor.fetch_tencent_quotes
+        original_load_state = monitor.load_state
+        original_save_state = monitor.save_state
+        original_send_webhook = monitor.send_webhook
+
+        def fake_fetch(codes: list[str]) -> dict[str, dict]:
+            called["fetch"] = True
+            return {
+                "159659": {
+                    "code": "159659",
+                    "name": "ETF",
+                    "price": 1.0,
+                    "quote_time": "20260601151151",
+                    "change_pct": 0.0,
+                    "premium_rate": 10.0,
+                }
+            }
+
+        try:
+            monitor.fetch_tencent_quotes = fake_fetch
+            monitor.load_state = lambda path: {"notifications": {}}
+            monitor.save_state = lambda path, state: None
+            monitor.send_webhook = lambda webhook, text, event: None
+
+            sent = monitor.run_once(
+                config,
+                now=datetime(2026, 6, 1, 15, 11, tzinfo=tz),
+                ignore_window=True,
+            )
+        finally:
+            monitor.fetch_tencent_quotes = original_fetch
+            monitor.load_state = original_load_state
+            monitor.save_state = original_save_state
+            monitor.send_webhook = original_send_webhook
+
+        self.assertTrue(called["fetch"])
+        self.assertEqual(sent, 1)
 
 
 if __name__ == "__main__":
