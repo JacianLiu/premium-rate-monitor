@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 TENCENT_QUOTE_URLS = ("https://qt.gtimg.cn/q=", "http://qt.gtimg.cn/q=")
 PREMIUM_RATE_INDEX = 77
 DEFAULT_CONFIG_PATH = "config.json"
+DEFAULT_DAILY_REPORT_TIME = "10:00"
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class Config:
     timezone: ZoneInfo
     state_file: Path
     max_notifications_per_24h: int
+    daily_report_time: day_time
 
 
 def load_config(path: Path) -> Config:
@@ -86,7 +88,15 @@ def load_config(path: Path) -> Config:
         timezone=ZoneInfo(raw.get("timezone", "Asia/Shanghai")),
         state_file=state_file,
         max_notifications_per_24h=int(raw.get("max_notifications_per_24h", 3)),
+        daily_report_time=parse_day_time(
+            raw.get("daily_report_time", DEFAULT_DAILY_REPORT_TIME)
+        ),
     )
+
+
+def parse_day_time(value: str) -> day_time:
+    hour, minute = value.split(":", 1)
+    return day_time(int(hour), int(minute))
 
 
 def market_prefix(code: str) -> str:
@@ -156,12 +166,16 @@ def is_monitoring_time(now: datetime) -> bool:
 
 def load_state(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return {"notifications": {}}
+        return empty_state()
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         logging.warning("state file is invalid JSON, starting with empty state: %s", path)
-        return {"notifications": {}}
+        return empty_state()
+
+
+def empty_state() -> dict[str, Any]:
+    return {"notifications": {}, "daily_reports": []}
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
@@ -205,6 +219,38 @@ def build_notification_text(quote: dict[str, Any], threshold: float) -> str:
         f"现价={quote['price']:.3f} 涨跌幅={quote['change_pct']:.2f}% "
         f"行情时间={quote['quote_time']}"
     )
+
+
+def log_quote_status(quote: dict[str, Any], threshold: float) -> None:
+    logging.info(
+        "%s(%s) premium_rate %.2f%% threshold %.2f%% price %.3f change %.2f%% quote_time %s",
+        quote["name"],
+        quote["code"],
+        quote["premium_rate"],
+        threshold,
+        quote["price"],
+        quote["change_pct"],
+        quote["quote_time"],
+    )
+
+
+def build_daily_report_text(
+    quotes: dict[str, dict[str, Any]],
+    targets: dict[str, EtfTarget],
+    now: datetime,
+) -> str:
+    lines = [f"ETF折溢价率监控日报 {now.strftime('%Y-%m-%d %H:%M:%S')}"]
+    for code, target in targets.items():
+        quote = quotes.get(code)
+        if quote is None:
+            lines.append(f"{code}: 未获取到行情")
+            continue
+        lines.append(
+            f"{quote['name']}({code}) 当前溢价率={quote['premium_rate']:.2f}% "
+            f"阈值={target.threshold:.2f}% 现价={quote['price']:.3f} "
+            f"涨跌幅={quote['change_pct']:.2f}% 行情时间={quote['quote_time']}"
+        )
+    return "\n".join(lines)
 
 
 def webhook_payload(webhook: Webhook, text: str, event: dict[str, Any]) -> dict[str, Any]:
@@ -270,6 +316,66 @@ def send_test_notifications(config: Config) -> int:
     return sent
 
 
+def is_daily_report_time(now: datetime, report_time: day_time) -> bool:
+    return now.hour == report_time.hour and now.minute == report_time.minute
+
+
+def should_send_daily_report(
+    state: dict[str, Any],
+    now: datetime,
+    report_time: day_time,
+) -> bool:
+    if not is_daily_report_time(now, report_time):
+        return False
+    today = now.date().isoformat()
+    return today not in state.setdefault("daily_reports", [])
+
+
+def record_daily_report(state: dict[str, Any], now: datetime) -> None:
+    today = now.date().isoformat()
+    reports = state.setdefault("daily_reports", [])
+    if today not in reports:
+        reports.append(today)
+
+
+def send_daily_report(
+    config: Config,
+    state: dict[str, Any],
+    quotes: dict[str, dict[str, Any]],
+    targets: dict[str, EtfTarget],
+    now: datetime,
+) -> int:
+    text = build_daily_report_text(quotes, targets, now)
+    event = {
+        "type": "daily_report",
+        "checked_at": now.isoformat(),
+        "quotes": [
+            {
+                "code": code,
+                "name": quote["name"],
+                "premium_rate": quote["premium_rate"],
+                "threshold": targets[code].threshold,
+                "price": quote["price"],
+                "change_pct": quote["change_pct"],
+                "quote_time": quote["quote_time"],
+            }
+            for code, quote in quotes.items()
+            if code in targets
+        ],
+    }
+    sent = 0
+    for webhook in config.webhooks:
+        try:
+            send_webhook(webhook, text, event)
+            sent += 1
+            logging.info("daily report sent: %s", webhook.url)
+        except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
+            logging.exception("failed to send daily report %s: %s", webhook.url, exc)
+    if sent > 0:
+        record_daily_report(state, now)
+    return sent
+
+
 def run_once(
     config: Config,
     now: datetime | None = None,
@@ -292,13 +398,8 @@ def run_once(
             continue
 
         premium_rate = quote["premium_rate"]
+        log_quote_status(quote, target.threshold)
         if premium_rate >= target.threshold:
-            logging.info(
-                "%s premium_rate %.2f%% >= threshold %.2f%%",
-                code,
-                premium_rate,
-                target.threshold,
-            )
             continue
 
         if not can_notify(
@@ -332,6 +433,9 @@ def run_once(
         if webhook_ok:
             record_notification(state, code, now)
             sent += 1
+
+    if should_send_daily_report(state, now, config.daily_report_time):
+        sent += send_daily_report(config, state, quotes, targets, now)
 
     save_state(config.state_file, state)
     return sent

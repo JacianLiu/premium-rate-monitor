@@ -17,6 +17,7 @@
   ],
   "poll_interval_seconds": 60,
   "timezone": "Asia/Shanghai",
+  "daily_report_time": "10:00",
   "state_file": "premium_rate_state.json",
   "max_notifications_per_24h": 3
 }

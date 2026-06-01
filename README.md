@@ -17,6 +17,7 @@ cp config.example.json config.json
 - `webhooks`: 通知地址数组。支持字符串，或 `{ "url": "...", "type": "generic" }` 对象。
 - `webhooks[].type`: 支持 `generic`、`feishu`、`dingtalk`、`wecom`。
 - `poll_interval_seconds`: 轮询间隔。
+- `daily_report_time`: 每日汇总通知时间，默认 `10:00`。每天只发送一次，内容为所有监控 ETF 的当前溢价率。
 - `state_file`: 通知限流状态文件。
 - `max_notifications_per_24h`: 每个 ETF 24 小时最多通知次数。
 
@@ -46,7 +47,7 @@ python3 monitor.py --config config.json --test-notify
 python3 monitor.py --config config.json
 ```
 
-`monitor.py` 内部会判断时间窗口，不在周一到周五 `09:15-15:10` 时不会请求行情或发送通知。
+`monitor.py` 内部会判断时间窗口，不在周一到周五 `09:15-15:10` 时不会请求行情或发送通知。每次检查都会在日志里输出所有 ETF 的当前溢价率；运行到 `daily_report_time` 所在分钟时，会推送一次 ETF 当前溢价率汇总。
 
 ## 行情字段
 

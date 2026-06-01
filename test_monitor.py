@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 import urllib.error
-from datetime import datetime, timedelta
+from datetime import datetime, time as day_time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -82,6 +82,7 @@ class NotificationLimitTest(unittest.TestCase):
             timezone=tz,
             state_file=Path("/tmp/premium-rate-monitor-test-state.json"),
             max_notifications_per_24h=3,
+            daily_report_time=day_time(10, 0),
         )
         called = {"fetch": False}
         original_fetch = monitor.fetch_tencent_quotes
@@ -135,6 +136,7 @@ class NotificationLimitTest(unittest.TestCase):
             timezone=tz,
             state_file=Path("/tmp/premium-rate-monitor-test-state.json"),
             max_notifications_per_24h=3,
+            daily_report_time=day_time(10, 0),
         )
         sent_urls = []
         original_send_webhook = monitor.send_webhook
@@ -150,6 +152,64 @@ class NotificationLimitTest(unittest.TestCase):
 
         self.assertEqual(sent, 2)
         self.assertEqual(sent_urls, ["https://example.com/a", "https://example.com/b"])
+
+    def test_daily_report_is_sent_once_at_report_time(self) -> None:
+        tz = ZoneInfo("Asia/Shanghai")
+        now = datetime(2026, 6, 1, 10, 0, 20, tzinfo=tz)
+        state = {"notifications": {}, "daily_reports": []}
+        targets = {"159659": monitor.EtfTarget(code="159659", threshold=11.0)}
+        quotes = {
+            "159659": {
+                "code": "159659",
+                "name": "ETF",
+                "price": 1.0,
+                "quote_time": "20260601100020",
+                "change_pct": 0.0,
+                "premium_rate": 10.0,
+            }
+        }
+        config = monitor.Config(
+            etfs=list(targets.values()),
+            webhooks=[monitor.Webhook(url="https://example.com/a")],
+            default_threshold=0.0,
+            poll_interval_seconds=60,
+            timezone=tz,
+            state_file=Path("/tmp/premium-rate-monitor-test-state.json"),
+            max_notifications_per_24h=3,
+            daily_report_time=day_time(10, 0),
+        )
+        sent_urls = []
+        original_send_webhook = monitor.send_webhook
+
+        try:
+            monitor.send_webhook = (
+                lambda webhook, text, event: sent_urls.append(webhook.url)
+            )
+
+            self.assertTrue(
+                monitor.should_send_daily_report(state, now, config.daily_report_time)
+            )
+            sent = monitor.send_daily_report(config, state, quotes, targets, now)
+        finally:
+            monitor.send_webhook = original_send_webhook
+
+        self.assertEqual(sent, 1)
+        self.assertEqual(sent_urls, ["https://example.com/a"])
+        self.assertFalse(
+            monitor.should_send_daily_report(state, now, config.daily_report_time)
+        )
+
+    def test_daily_report_time_requires_exact_minute(self) -> None:
+        tz = ZoneInfo("Asia/Shanghai")
+        state = {"notifications": {}, "daily_reports": []}
+
+        self.assertFalse(
+            monitor.should_send_daily_report(
+                state,
+                datetime(2026, 6, 1, 10, 1, tzinfo=tz),
+                day_time(10, 0),
+            )
+        )
 
 
 if __name__ == "__main__":
